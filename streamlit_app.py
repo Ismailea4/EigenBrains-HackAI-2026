@@ -107,9 +107,10 @@ def _ss(key: str, default):
         st.session_state[key] = default
 
 
+_ss("arabic", "")
 _ss("arabizi", "")
 _ss("french", "")
-_ss("arabizi_view", "")
+_ss("arabic_view", "")
 _ss("french_edit", "")
 _ss("audio_bytes", None)
 _ss("audio_name", "")
@@ -236,15 +237,16 @@ if st.button(
             "vous avez bien clique sur 'Arreter' et autorise l'acces au micro."
         )
     else:
-        with st.spinner("Whisper + traduction francaise en cours..."):
+        with st.spinner("Whisper (arabe) + traduction francaise en cours..."):
             try:
                 result = transcribe_bytes(
                     st.session_state.audio_bytes,
                     filename=st.session_state.audio_name or "recording.wav",
                 )
                 # Write to the WIDGET keys so the textareas refresh on rerun.
-                st.session_state.arabizi_view = result.transcript
+                st.session_state.arabic_view = result.arabic
                 st.session_state.french_edit = result.french
+                st.session_state.arabic = result.arabic
                 st.session_state.arabizi = result.transcript
                 st.session_state.french = result.french
                 st.success("Transcription terminee.")
@@ -258,11 +260,14 @@ st.markdown("## 2. Transcription")
 tx_col1, tx_col2 = st.columns(2)
 with tx_col1:
     st.text_area(
-        "Arabizi (lecture seule)",
+        "Darija (arabe - lecture seule)",
         height=180,
         disabled=True,
-        key="arabizi_view",
+        key="arabic_view",
     )
+    if st.session_state.get("arabizi"):
+        with st.expander("Voir en Arabizi (latin + chiffres)"):
+            st.code(st.session_state.arabizi, language="text")
 with tx_col2:
     st.text_area(
         "Francais (editable - corrigez si besoin)",
@@ -270,7 +275,7 @@ with tx_col2:
         key="french_edit",
     )
 # Mirror widget state into the "logical" keys used downstream.
-st.session_state.arabizi = st.session_state.get("arabizi_view", "")
+st.session_state.arabic = st.session_state.get("arabic_view", "")
 st.session_state.french = st.session_state.get("french_edit", "")
 
 # ---------------------------------------------------------------------------

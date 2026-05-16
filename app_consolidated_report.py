@@ -101,8 +101,9 @@ def _transcript_from_audio(args: argparse.Namespace) -> str | None:
         print(f"[i] Recording {args.record}s from microphone...")
         result = record_and_transcribe(seconds=float(args.record))
 
-    print(f"[OK] Arabizi: {result.transcript}")
-    print(f"[OK] Francais : {result.french}")
+    print(f"[OK] Darija (ar): {result.arabic}")
+    print(f"[OK] Arabizi   : {result.transcript}")
+    print(f"[OK] Francais  : {result.french}")
     _persist_transcript(result.transcript, result.french)
     return result.french
 

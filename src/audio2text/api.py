@@ -1,47 +1,76 @@
 """Reusable Darija->French audio transcription helpers.
 
-Wraps the same OpenAI logic used by `whisper_record_transcriber.py` so that
-the rest of the system (e.g. the consolidated report app) can call:
-
-    from src.audio2text import transcribe_file, record_and_transcribe
-
-Both return a `TranscriptionResult` with `.transcript` (Arabizi) and
-`.french` (French translation).
+Whisper transcribes natively in Arabic script (most accurate for Darija).
+We then build the Arabizi form locally and translate to French from Arabic.
 """
 
 from __future__ import annotations
 
 import io
 import os
+import re
 import wave
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
 from .whisper_record_transcriber import (
+    ARABIC_LETTER_MAP,
     DEFAULT_TRANSCRIPTION_MODEL,
     DEFAULT_TRANSLATION_MODEL,
     SAMPLE_RATE,
     CHANNELS,
-    TRANSCRIPTION_PROMPT,
-    TRANSLATION_SYSTEM_PROMPT,
     clean_transcript,
     load_env_file,
     make_wav_file,
 )
 
 
+# Arabic-first prompt: ask Whisper to stay in Arabic script even for Darija.
+TRANSCRIPTION_PROMPT_AR = (
+    "تفريغ صوتي بالدارجة المغربية. اكتب كل شيء بالأحرف العربية فقط، "
+    "بدون ترجمة وبدون أحرف لاتينية. حافظ على لهجة المتحدث."
+)
+
+# French translation system prompt - input will be Arabic Darija.
+TRANSLATION_SYSTEM_PROMPT_FR = (
+    "Tu traduis un texte medical en darija marocaine (ecrit en arabe) vers "
+    "le francais clinique. Rends une traduction naturelle, fidele et complete, "
+    "adaptee a une consultation infirmiere. Reponds uniquement avec la "
+    "traduction francaise, sans commentaire."
+)
+
+
 @dataclass
 class TranscriptionResult:
-    transcript: str  # Arabizi / Latin form
-    french: str      # French translation
+    arabic: str       # native Arabic-script Darija
+    transcript: str   # Arabizi (Latin + numbers) for quick reading
+    french: str       # French translation
+
+
+def arabic_to_arabizi(text: str) -> str:
+    """Convert Arabic-script text to Arabizi using ARABIC_LETTER_MAP."""
+    out = []
+    for ch in text:
+        if "\u0610" <= ch <= "\u061a" or "\u064b" <= ch <= "\u065f":
+            continue  # diacritics
+        if "\u0660" <= ch <= "\u0669":
+            out.append(str(ord(ch) - ord("\u0660")))
+            continue
+        if "\u06f0" <= ch <= "\u06f9":
+            out.append(str(ord(ch) - ord("\u06f0")))
+            continue
+        out.append(ARABIC_LETTER_MAP.get(ch, ch))
+    s = "".join(out)
+    # Keep readable punctuation; collapse whitespace.
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 
 def _load_env_chain() -> None:
-    """Load .env from the audio2text folder AND the repo root."""
     here = Path(__file__).resolve()
     load_env_file(here.parent / ".env")
-    load_env_file(here.parents[2] / ".env")  # repo root
+    load_env_file(here.parents[2] / ".env")
 
 
 def _build_client():
@@ -60,10 +89,25 @@ def _translate_to_french(client, text: str, model: str) -> str:
         return ""
     response = client.responses.create(
         model=model,
-        instructions=TRANSLATION_SYSTEM_PROMPT,
+        instructions=TRANSLATION_SYSTEM_PROMPT_FR,
         input=text,
     )
     return response.output_text.strip()
+
+
+def _whisper_transcribe(client, file_obj, model: str) -> str:
+    """Call Whisper pinned to Arabic. Try whisper-1 for `language` support."""
+    # gpt-4o-transcribe doesn't accept `language`, whisper-1 does.
+    use_whisper1 = "whisper" in model
+    kwargs = {
+        "model": model,
+        "file": file_obj,
+        "prompt": TRANSCRIPTION_PROMPT_AR,
+    }
+    if use_whisper1:
+        kwargs["language"] = "ar"
+    result = client.audio.transcriptions.create(**kwargs)
+    return (getattr(result, "text", "") or "").strip()
 
 
 def _wav_from_path(path: Path) -> io.BytesIO:
@@ -72,28 +116,33 @@ def _wav_from_path(path: Path) -> io.BytesIO:
     return buf
 
 
+def _pick_tx_model(override: Optional[str]) -> str:
+    # Prefer whisper-1 (supports language=ar) unless user explicitly overrides.
+    return (
+        override
+        or os.getenv("OPENAI_TRANSCRIBE_MODEL")
+        or "whisper-1"
+    )
+
+
 def transcribe_file(
     audio_path: str | Path,
     transcription_model: Optional[str] = None,
     translation_model: Optional[str] = None,
 ) -> TranscriptionResult:
-    """Transcribe an existing audio file (wav/mp3/m4a/...) and translate to French."""
+    """Transcribe an existing audio file (Darija) -> Arabic + Arabizi + French."""
     audio_path = Path(audio_path)
     if not audio_path.exists():
         raise FileNotFoundError(audio_path)
 
     client = _build_client()
-    tx_model = transcription_model or os.getenv("OPENAI_TRANSCRIBE_MODEL", DEFAULT_TRANSCRIPTION_MODEL)
+    tx_model = _pick_tx_model(transcription_model)
     tr_model = translation_model or os.getenv("OPENAI_TRANSLATE_MODEL", DEFAULT_TRANSLATION_MODEL)
 
-    result = client.audio.transcriptions.create(
-        model=tx_model,
-        file=_wav_from_path(audio_path),
-        prompt=TRANSCRIPTION_PROMPT,
-    )
-    transcript = clean_transcript(result.text)
-    french = _translate_to_french(client, transcript, tr_model)
-    return TranscriptionResult(transcript=transcript, french=french)
+    arabic = _whisper_transcribe(client, _wav_from_path(audio_path), tx_model)
+    arabizi = arabic_to_arabizi(arabic)
+    french = _translate_to_french(client, arabic or arabizi, tr_model)
+    return TranscriptionResult(arabic=arabic, transcript=arabizi, french=french)
 
 
 def transcribe_bytes(
@@ -104,7 +153,7 @@ def transcribe_bytes(
 ) -> TranscriptionResult:
     """Transcribe in-memory audio bytes (e.g. from a browser recorder)."""
     client = _build_client()
-    tx_model = transcription_model or os.getenv("OPENAI_TRANSCRIBE_MODEL", DEFAULT_TRANSCRIPTION_MODEL)
+    tx_model = _pick_tx_model(transcription_model)
     tr_model = translation_model or os.getenv("OPENAI_TRANSLATE_MODEL", DEFAULT_TRANSLATION_MODEL)
 
     # Detect real container from magic bytes - mic_recorder often returns
@@ -126,18 +175,13 @@ def transcribe_bytes(
     safe_name = f"recording.{ext}"
     buf = io.BytesIO(audio_bytes)
     buf.name = safe_name
-    print(f"[audio2text] Sending {len(audio_bytes)} bytes as {safe_name} (detected {ext})")
+    print(f"[audio2text] Sending {len(audio_bytes)} bytes as {safe_name} (detected {ext}) model={tx_model}")
 
-    result = client.audio.transcriptions.create(
-        model=tx_model,
-        file=buf,
-        prompt=TRANSCRIPTION_PROMPT,
-    )
-    raw_text = (getattr(result, "text", "") or "").strip()
-    print(f"[audio2text] Whisper raw: {raw_text!r}")
-    transcript = clean_transcript(raw_text)
-    french = _translate_to_french(client, transcript or raw_text, tr_model)
-    return TranscriptionResult(transcript=transcript or raw_text, french=french)
+    arabic = _whisper_transcribe(client, buf, tx_model)
+    print(f"[audio2text] Arabic raw: {arabic!r}")
+    arabizi = arabic_to_arabizi(arabic)
+    french = _translate_to_french(client, arabic or arabizi, tr_model)
+    return TranscriptionResult(arabic=arabic, transcript=arabizi, french=french)
 
 
 def record_and_transcribe(
@@ -158,7 +202,7 @@ def record_and_transcribe(
         ) from exc
 
     client = _build_client()
-    tx_model = transcription_model or os.getenv("OPENAI_TRANSCRIBE_MODEL", DEFAULT_TRANSCRIPTION_MODEL)
+    tx_model = _pick_tx_model(transcription_model)
     tr_model = translation_model or os.getenv("OPENAI_TRANSLATE_MODEL", DEFAULT_TRANSLATION_MODEL)
 
     print(f"[REC] Recording {seconds:.1f}s at {SAMPLE_RATE} Hz...  (parlez maintenant)")
@@ -173,14 +217,10 @@ def record_and_transcribe(
 
     audio = audio.reshape(-1)
     wav_file = make_wav_file(audio)
-    result = client.audio.transcriptions.create(
-        model=tx_model,
-        file=wav_file,
-        prompt=TRANSCRIPTION_PROMPT,
-    )
-    transcript = clean_transcript(result.text)
-    french = _translate_to_french(client, transcript, tr_model)
-    return TranscriptionResult(transcript=transcript, french=french)
+    arabic = _whisper_transcribe(client, wav_file, tx_model)
+    arabizi = arabic_to_arabizi(arabic)
+    french = _translate_to_french(client, arabic or arabizi, tr_model)
+    return TranscriptionResult(arabic=arabic, transcript=arabizi, french=french)
 
 
 __all__ = [
