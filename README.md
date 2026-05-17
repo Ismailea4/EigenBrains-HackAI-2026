@@ -5,7 +5,7 @@
 ShifA'I is a multimodal AI triage agent that empowers rural Moroccan nurses by processing spoken Darija consultations and medical imagery to generate structured diagnostic reports and automatically escalate critical emergencies to urban specialists.
 
 <p align="center">
-  <img src="assets/logo.png" alt="EigenBrains Logo" width="300" />
+  <img src="assets/logo2.jpg" alt="EigenBrains Logo" width="500" />
 </p>
 
 ---
@@ -13,6 +13,8 @@ ShifA'I is a multimodal AI triage agent that empowers rural Moroccan nurses by p
 ## 🎯 Project Overview
 
 Rural dispensaries in Morocco are staffed by nurses who often lack specialist support. **ShifA'I** bridges this gap by acting as an AI-powered co-pilot: it listens to the live Darija conversation between nurse and patient, transcribes and understands it, analyzes uploaded medical images (X-rays, ultrasounds), and produces a structured PDF triage report — escalating emergencies to urban doctors automatically.
+
+![Alt Text](assets/demo.gif)
 
 ### Core Workflow
 
